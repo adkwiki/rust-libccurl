@@ -55,6 +55,9 @@ const INDICES: [usize; 730] = [
 
 const TRUTH_TABLE: [i8; 11] = [ 1, 0, -1, 0, 1, -1, 0, 0, -1, 1, 0 ];
 
+const H_BITS_128: u128 = 0x0000000000000000_0000000000000000;
+const L_BITS_128: u128 = 0xFFFFFFFFFFFFFFFF_FFFFFFFFFFFFFFFF;
+
 fn tx2trit(tx: &str) -> [i8; TRITS_LENGTH] {
     println!("tx2trit");
 
@@ -150,19 +153,391 @@ fn hash2tryte(hash: [i8; STATE_LENGTH]) -> [u8; TRYTE_LENGTH]{
     tryte
 }
 
+fn pwork(tx: &str, mwm: i64) -> (i128, [i8; HASH_LENGTH]){
+
+    let trits = tx2trit(tx);
+    let mid = absorb(trits, TX_LENGTH * 3 - HASH_LENGTH);
+
+    let (count, nonce) = pwork_child(mid, mwm, 0);
+
+    let mut count_sse = 0;
+    if count >= 0 {
+        count_sse = count;
+    } else {
+        count_sse += -1 * count + 1;
+    }
+
+    (count_sse, nonce)
+}
+
+/*
+long long int pwork(char tx[], int mwm, char nonce[])
+{
+    long long int countSSE = 0;
+    int i = 0;
+    char trits[TX_LENGTH * 3] = { 0 }, mid[STATE_LENGTH] = { 0 };
+
+    tx2trit(tx, trits);
+    absorb(mid, trits, TX_LENGTH * 3 - HASH_LENGTH);
+    int procs = getCpuNum();
+    if (procs>1){
+        // procs--;
+    }
+    fprintf(stderr, "core num:%d\n", procs);
+#ifdef _WIN32
+    HANDLE *thread = (HANDLE*)calloc(sizeof(HANDLE), procs);
+#else
+    pthread_t* thread = (pthread_t*)calloc(sizeof(pthread_t), procs);
+#endif
+    PARAM* p = (PARAM*)calloc(sizeof(PARAM), procs);
+    for (i = 0; i < procs; i++) {
+        p[i].mid = mid;
+        p[i].mwm = mwm;
+        p[i].n = i;
+#ifdef _WIN32
+        unsigned int id=0;
+        thread[i] = (HANDLE)_beginthreadex(NULL, 0, pwork_, (LPVOID)&p[i], 0, NULL);
+        if (thread[i]==NULL) {
+#else
+        int ret = pthread_create(&thread[i], NULL, pwork_, &p[i]);
+        if (ret != 0) {
+#endif
+            fprintf(stderr, "can not create thread\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+    for (i = 0; i < procs; i++) {
+#ifdef _WIN32
+        int ret = WaitForSingleObject( thread[i], INFINITE );
+        CloseHandle(thread[i]);
+        if (ret == WAIT_FAILED) {
+#else
+        int ret = pthread_join(thread[i], NULL);
+        if (ret != 0) {
+#endif
+            fprintf(stderr, "can not join thread\n");
+            exit(EXIT_FAILURE);
+        }
+        if (p[i].count >= 0) {
+            memcpy(nonce, p[i].nonce, HASH_LENGTH);
+            countSSE += p[i].count;
+        }
+        else {
+            countSSE += -p[i].count + 1;
+        }
+    }
+    free(thread);
+    free(p);
+
+    return countSSE;
+}
+*/
+
+fn pwork_child(mid: [i8; STATE_LENGTH], mvm: i64, n: i64) -> (i128, [i8; HASH_LENGTH]) {
+    // 
+
+    //let lmid: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
+    //let hmid: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
+
+    /*
+    #define LOW00 0xDB6DB6DB6DB6DB6DuLL //0b1101101101101101101101101101101101101101101101101101101101101101L;
+    #define HIGH00 0xB6DB6DB6DB6DB6DBuLL //0b1011011011011011011011011011011011011011011011011011011011011011L;
+    #define LOW10 0xF1F8FC7E3F1F8FC7uLL //0b1111000111111000111111000111111000111111000111111000111111000111L;
+    #define HIGH10 0x8FC7E3F1F8FC7E3FuLL //0b1000111111000111111000111111000111111000111111000111111000111111L;
+    #define LOW20 0x7FFFE00FFFFC01FFuLL //0b0111111111111111111000000000111111111111111111000000000111111111L;
+    #define HIGH20 0xFFC01FFFF803FFFFuLL //0b1111111111000000000111111111111111111000000000111111111111111111L;
+    #define LOW30 0xFFC0000007FFFFFFuLL //0b1111111111000000000000000000000000000111111111111111111111111111L;
+    #define HIGH30 0x003FFFFFFFFFFFFFuLL //0b0000000000111111111111111111111111111111111111111111111111111111L;
+    #define LOW40 0xFFFFFFFFFFFFFFFFuLL //0b1111111111111111111111111111111111111111111111111111111111111111L;
+    #define HIGH40 0xFFFFFFFFFFFFFFFFuLL //0b1111111111111111111111111111111111111111111111111111111111111111L;
+    
+    #define LOW01 0x6DB6DB6DB6DB6DB6uLL //0b0110110110110110110110110110110110110110110110110110110110110110
+    #define HIGH01 0xDB6DB6DB6DB6DB6DuLL //0b1101101101101101101101101101101101101101101101101101101101101101
+    #define LOW11 0xF8FC7E3F1F8FC7E3uLL //0b1111100011111100011111100011111100011111100011111100011111100011
+    #define HIGH11 0xC7E3F1F8FC7E3F1FuLL //0b1100011111100011111100011111100011111100011111100011111100011111
+    #define LOW21 0xC01FFFF803FFFF00uLL //0b1100000000011111111111111111100000000011111111111111111100000000
+    #define HIGH21 0x3FFFF007FFFE00FFuLL //0b0011111111111111111100000000011111111111111111100000000011111111
+    #define LOW31 0x00000FFFFFFFFFFFuLL //0b0000000000000000000011111111111111111111111111111111111111111111
+    #define HIGH31 0xFFFFFFFFFFFE0000uLL //0b1111111111111111111111111111111111111111111111100000000000000000
+    #define LOW41 0x000000000001FFFFuLL //0b0000000000000000000000000000000000000000000000011111111111111111
+    #define HIGH41 0xFFFFFFFFFFFFFFFFuLL //0b1111111111111111111111111111111111111111111111111111111111111111
+*/
+    let (mut lmid, mut hmid) = para(mid);
+    lmid[0] = 0x6DB6DB6DB6DB6DB6_DB6DB6DB6DB6DB6D; // LOW01  LOW00
+    hmid[0] = 0xDB6DB6DB6DB6DB6D_B6DB6DB6DB6DB6DB; // HIGH01 HIGH00
+    lmid[1] = 0xF8FC7E3F1F8FC7E3_F1F8FC7E3F1F8FC7; // LOW11  LOW10
+    hmid[1] = 0xC7E3F1F8FC7E3F1F_8FC7E3F1F8FC7E3F; // HIGH11 HIGH10
+    lmid[2] = 0xC01FFFF803FFFF00_7FFFE00FFFFC01FF; // LOW21  LOW20
+    hmid[2] = 0x3FFFF007FFFE00FF_FFC01FFFF803FFFF; // HIGH21 HIGH20
+    lmid[3] = 0x00000FFFFFFFFFFF_FFC0000007FFFFFF; // LOW31  LOW30
+    hmid[3] = 0xFFFFFFFFFFFE0000_003FFFFFFFFFFFFF; // HIGH31 HIGH30
+    lmid[4] = 0x000000000001FFFF_FFFFFFFFFFFFFFFF; // LOW41  LOW40
+    hmid[4] = 0xFFFFFFFFFFFFFFFF_FFFFFFFFFFFFFFFF; // HIGH41 HIGH40
+    
+    let (lmid2, hmid2) = incrN128(n, lmid, hmid);
+    let (count, nonce) = loop_cpu(lmid2, hmid2, mvm);
+    
+    (count, nonce)
+}
+
+
+fn loop_cpu(lmid: [u128; STATE_LENGTH], hmid: [u128; STATE_LENGTH], mvm: i64) -> (i128, [i8; HASH_LENGTH]) {
+    //let n = 0;
+    //let j = 0;
+    //let i = 0;
+    let mut lcpy: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
+    let mut hcpy: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
+
+    let mut i = 0;
+    loop {
+        if incr(lmid, hmid) {
+            break;
+        }
+        for j in 0..STATE_LENGTH {
+            lcpy[j] = lmid[j];
+            hcpy[j] = hmid[j];
+        }
+
+       let (lcpy_tr, hcp_tr) = transform64(lcpy, hcpy);
+/*
+        if ((n = check(lcpy + STATE_LENGTH, hcpy + STATE_LENGTH, m)) >= 0) {
+            seri(lmid, hmid, n, nonce);
+            return i * 128;
+        }
+        int stop_=readStop();
+        if (stop_) {
+            return -i * 128 - 1;
+        }
+*/
+        i += 1;
+    }
+
+    let dummy = [0; HASH_LENGTH];
+    (-i * 128 - 1, dummy)
+}
+
+/*
+long long int loop_cpu(__m128i* lmid, __m128i* hmid, int m, char* nonce)
+{
+    int n = 0, j = 0;
+    long long int i = 0;
+    __m128i lcpy[STATE_LENGTH * 2], hcpy[STATE_LENGTH * 2];
+    for (i = 0; !incr(lmid, hmid); i++) {
+        for (j = 0; j < STATE_LENGTH; j++) {
+            lcpy[j] = lmid[j];
+            hcpy[j] = hmid[j];
+        }
+        transform64(lcpy, hcpy);
+        if ((n = check(lcpy + STATE_LENGTH, hcpy + STATE_LENGTH, m)) >= 0) {
+            seri(lmid, hmid, n, nonce);
+            return i * 128;
+        }
+        int stop_=readStop();
+        if (stop_) {
+            return -i * 128 - 1;
+        }
+    }
+    return -i * 128 - 1;
+}
+*/
+
+fn transform64(lmid: [u128; STATE_LENGTH], hmid: [u128; STATE_LENGTH]) -> ([u128; STATE_LENGTH], [u128; STATE_LENGTH]) {
+
+    let mut lfrom: [u128; STATE_LENGTH] = lmid;
+    let mut hfrom: [u128; STATE_LENGTH] = hmid;
+
+    // TODO ???
+    let mut lto: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
+    let mut hto: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
+
+    for round in 0..26 {
+        for j in 0..STATE_LENGTH {
+            let t1 = INDICES[j];
+            let t2 = INDICES[j + 1];
+
+            let alpha = lfrom[t1];
+            let beta = hfrom[t1];
+            let gamma = hfrom[t2];
+
+            // (alpha | (~gamma)) & (lfrom[t2] ^ beta)
+            let nalpha = (!alpha) & gamma;
+            let delta =  (!nalpha) & (lfrom[t2] ^ beta);
+
+            // ~delta
+            lto[j] = (!delta) & H_BITS_128;
+
+            // (alpha ^ gamma) | delta
+            hto[j] = ((!alpha) & gamma) | delta;
+        }
+
+        let lswap: [u128; STATE_LENGTH] = lfrom;
+        let hswap: [u128; STATE_LENGTH] = hfrom; 
+        lfrom = lto;
+        hfrom = hto;
+        lto = lswap;
+        hto = hswap;
+    }
+
+    for k in 0..HASH_LENGTH {
+        let t1 = INDICES[k];
+        let t2 = INDICES[k + 1];
+
+        let alpha = lfrom[t1];
+        let beta = hfrom[t1];
+        let gamma = hfrom[t2];
+
+
+        let nalpha = (!alpha) & gamma;
+        let delta =  (!nalpha) & (lfrom[t2] ^ beta);
+
+        // ~delta
+        lto[k] = (!delta) & H_BITS_128;
+
+        // (alpha ^ gamma) | delta
+        hto[k] = ((!alpha) & gamma) | delta;
+    }
+
+    (lto, hto)
+}
+
+
+fn incr(lmid: [u128; STATE_LENGTH], hmid: [u128; STATE_LENGTH]) -> bool {
+
+    let mut c: [u64; 2] = [0; 2];
+
+    let mut lmid_copy: [u128; STATE_LENGTH] = lmid;
+    let mut hmid_copy: [u128; STATE_LENGTH] = hmid;
+
+    let mut i = 5;
+    loop {
+        //i < HASH_LENGTH && (i == 5 || c[0] )
+        if HASH_LENGTH <= i || ( i != 5 && c[0] == 0) {
+            break;
+        }
+
+        let low = lmid_copy[i];
+        let high = hmid_copy[i];
+
+        lmid_copy[i] = high ^ low;
+        hmid_copy[i] = low;
+
+        let carry = (!low) & high;
+
+        // TODO safe?
+        c = unsafe { std::mem::transmute::<u128, [u64; 2]>(carry) };
+
+        i += 1;
+    }
+
+    i == HASH_LENGTH
+}
+
+
+fn incrN128(n: i64, lmid: [u128; STATE_LENGTH], hmid: [u128; STATE_LENGTH]) -> ([u128; STATE_LENGTH], [u128; STATE_LENGTH]) {
+    let mut c: [u64; 2] = [1; 2];
+
+    let mut lmid_copy: [u128; STATE_LENGTH] = lmid;
+    let mut hmid_copy: [u128; STATE_LENGTH] = hmid;
+
+    //__m128i carry;
+    //let mut carry: u128 = 0;
+
+    for _j in 0..n {
+        //carry = 0xFFFFFFFFFFFFFFFF_FFFFFFFFFFFFFFFF; //_mm_set_epi64x(HBITS, HBITS);
+        let mut i = HASH_LENGTH - 7;
+        loop {
+            // TODO wrong condition?
+            if i >= HASH_LENGTH || c[0] == 0 {
+                break;
+            }
+
+            let low = lmid_copy[i];
+            let high = hmid_copy[i];
+
+            lmid_copy[i] = high ^ low;
+            hmid_copy[i] = low;
+
+            let carry = (!low) & high;
+
+            // TODO safe?
+            c = unsafe { std::mem::transmute::<u128, [u64; 2]>(carry) };
+
+            i += 1;
+        }
+    }
+
+    (lmid_copy, hmid_copy)
+}
+/*
+void incrN128(int n, __m128i* mid_low, __m128i* mid_high)
+{
+    int i, j;
+    alignas(16) unsigned long long c[2]={1,1};
+    __m128i carry;
+    for (j = 0; j < n; j++) {
+        carry = _mm_set_epi64x(HBITS, HBITS);
+        for (i = HASH_LENGTH - 7; i < HASH_LENGTH && c[0] ; i++) {
+            __m128i low = mid_low[i], high = mid_high[i];
+            mid_low[i] = _mm_xor_si128(high,low);
+            mid_high[i] = low;
+            carry = _mm_andnot_si128(low,high);
+            _mm_store_si128 ((__m128i*)c,carry);
+        }
+    }
+}
+*/
+
+//const H_BITS: i64 = 0xFFFFFFFFFFFFFFFF;
+//const L_BITS: i64 = 0x0000000000000000;
+
+
+fn para(mid: [i8; STATE_LENGTH]) -> ([u128; STATE_LENGTH], [u128; STATE_LENGTH]) {
+
+    let mut lmid: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
+    let mut hmid: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
+
+    const H_BITS_128: u128 = 0xFFFFFFFFFFFFFFFF_FFFFFFFFFFFFFFFF;
+    const L_BITS_128: u128 = 0x0000000000000000_0000000000000000;
+    
+    for count in 0..STATE_LENGTH {
+        if mid[count] == 0 {
+            // _mm_set_epi64x
+            // int64 b, int64 a -> int128 a_b
+            lmid[count] = H_BITS_128;
+            hmid[count] = H_BITS_128;
+        } else if mid[count] == 1 {
+            lmid[count] = L_BITS_128;
+            hmid[count] = H_BITS_128;
+        } else if mid[count] == -1 {
+            lmid[count] = H_BITS_128;
+            hmid[count] = L_BITS_128;
+        }
+    }
+
+    (lmid, hmid)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SYMBOLS_TRITS_EXPECTED: &str = "MPMZZPPZMMMPMZZPZPZPMZPMMPPPZMMPMPZMZMZZZZMPPPPMMZMPMPZMZPZMPMZPMZZPPMMMPPZZZPMPZPZPPPZPPMZZMMZZPZMZMMZMPMMPMZPMMZPZPPZMPPZMZZZPPMMMZPMZPMMMMMPZPPZZPPMZPZPMZMMPPZMMPPMPZMPMZZMZMMPMMPPZMMMMPZMZZPMPPPPPPMZMMPMZMMZZMMMPZPMMMZMZMZPZPZMPMPPMPMMZZZMMPPPZZZPPMZMPPZPPZMZZZPZMZMMMMZZZZPPMPZZZPMMPPPMMPPMPZZMPPPZZPZMMZMPZZZPPPZMMZPPZZZZPPZPMPPPMZMMPZPPPMZPZMMMZPMMMMMMZPPZPPZMZZZMPZPZZZPZMMZZPZPZMZZMZZZMPZZZMPPZZPPZZPMZPPZZPZPZMMPPPZPMMZMMPZZZZZZZPMPMMPMMZPPZPMMZMPMMZPMPZMMMZMPMPPZMPPMPMPZMPZMMPMPZPPZZMZMMMMPMZPZZMPMZPMMPMZMZMZZPMMPZZZZZZPZZPZPZPZZMZZMMMMZZPZZMMMZZMZMPMPZZZZMZZZMMPZPZPPMPMZZMZZPZZZZPZZZMMMZPZMZMZPPMZPPMZMMPZMZZZZPPMMZPPZZPMZMMMZPZZZPZMPPZZPMPZZMZMMPZMMPPMZMPMPPPPZPZZPPPPZPMMZPPZPMPMPMPZPMPZMMZMMPMZMPPMMZZMZPPZPPZMZZZPPPZMPPZMMPPMMZZPPPZMMMMMPZPMZPZMZPMMZPZPPZZZZZMPPMZZPPMMZZZZPMMMMMZZZZPPZPPPMMMZMMPZPZPZZMPZMMMPMPPPPMMPPMPPPZPMPZZZZPZPZZMMPMMZZZPZZMZPZMPPZMPZPPPPZPPMZPZZMPPPPZZMZZZZZZZMMPPMPMMMZPPZMPMZZPMMMPPZZPPZZPPZPZPMZMMMPZZPPPPZPZMPPZZMZMPMZMMPPZZPMZPPMPZPZPZPPZZMZPPMMZPPZZZPZPZMPPZPZMPZZZPMMMZPZZMMPPPMMZPZMZPMPZPMMMMMZZZZPPPMZMZMPZMZPZZZZMPMZMZZMMZMZPZZZZPZZZMMZMPZPPZZZPMPZMMMPMPZMPPMMZPPMZMPZMZZZMPZMZPMPMMMPPPMZZMZMMPPPZPZPZZZMZZMZPZZZMZPMMPPMMPZPZZPMMZZZZPMZZMPZPZMZZZPPPMMZZZMZZZPMMZMMZZPZPPPPPMPPZZMZPMPPZZZMPMZZZMMZZPZZMMPMPZPZZPPPPMMMZZPMZZMMPPMMPMPZMPPPPMMZZMZMMZZMMMMZZZMPPZZPMPPPMZPZMPZZMMPPZPPZZZZPPPPMZZZPPMPZPMZMZZPZZMMZZPMMPPMPZPPZMPZMMPPMZPZMZMZPMZPPPMMZZZPPZZMMZZPMZMZPPMPMMZMZMPZZPPMZPPZZZMPZPPPMMZMPPMPPZMPPMPMZZMZMMMPPMZPZPMMMZPZPMPZZMZMMPMZPMZPPZZZPPPZZPMZPPMZMPPMPZMZMZPMPPPMZPPMPMMPMMZZZZMZPPPMMPZMMPPPMMPPMZZPZPMZZMPZPZZZZPZPZPMPZMPMMMMPZZPMZZPZPMMMZPMZMMPMMMZMPMMPMMPPMZPZMZPMMPZZMPZMPMPMZPMZZPZZPZPPMPZZMZZPZZMPMMMPPPMMMPPPZZZZPMMMPZPZPMZMMPMMMMZMMMZMMMPMZMMZMMPZMPMPZMPZZMPMMZZPZPMPMPPMZPMMPMMZZPMMZPMMMZPPZPMZMPPZZMZMMMPZZZMZMMZPMPPMPZMPMMPPPPPZZPPZPMPPPMMPMZZMMZPPPPMMMMPPZMMMPPPPMZMPMMPZMPPMMPMPPZMZZMPPPZZMPMZPMMPMZMMPZZMMPPPMMMZZPZMMZZZZMZPZZPMPPMPPMZPPPPZMMMZMPMZPZPZMMZPMPMZZPPMPMZMPPMMMMPZZMPZMMPPMPZPPMMMZPZZZZMMZPPMPPZPMMMMPPZPMMMZPMPZMPMZZPMZZMPZZZMMZPZMMPMMMPMZPMMPMZMMMZZPZPZZZZZPPZMPMZMMMPMZMMMPMMMMPPZZMPPMPPZZMMPPZZMPZMPPMPPMPZMPPMMPZMPZPPPPZMMPZPPMMPZMMPMZPMMMZZMPMZPZPPMMPPZMMMPZZZPMMZPZZZZZMZPMMZMPMZPZMZMMPMZZZZZPPMPPMZPPMZMPPZZZMPPZZZMMZPPZMMPZPPPPZZMPPZMZZMPPZPZMPZPMZZMMZPZPMMPMPMMPPMPPMPMZZZPPZZZZPZPMPZMPZPMZZMPPPZZZZMPPZPMPZZPPPMPZPPMZZPZPZZPZPPMMMPZMZMPZMMMPZZMZZPPMZMZMMMZZMMZPPMZPPPZZMZZZPMZMPZPPPMPMZMMMMZPZPZZPPMPZPMPMMPZPMPPPMZPPMZZMMPMPMMMPMPMMMZPMPZMZZPPPMMPZMPMMMMZPPPPPPPZZMMPPMPZMMZZMPZMPPZPMPPMMZPMPZMZMPZZMMZMZZZPZZPPMMMZMMZMZZZPZZMPMMMMPPPZMPZZMZPZZPMPPPZPZMMPPPMMPMMZZPZZPZZMPPMPPPMPMZPZMPPZPMZMMMZZPZMZPMZPMZMPMMPPPZPMPMZMMMPPMZZZPMPMPZPPMPPMMMMMPZMZMZPMMZMZMZZZMZPPPMZMPPPMPZPZPMPMPPZPPZPMMPPPZMZMPZZZPZMPMMMZPMMPZMZMPZMMZMMMMMMPMMMMZPZPZPZZMPPZMZMMPZPZMZPZPMPZMZPPMMPPMMZMZZZZPPMPPPZMPPZZZZZMPMPMZPMPPPZZMZPPZMMPMZMMPZPPPZPZPMMPMZPZZPPZZZMMZMPZZZPPPZMPZPPPZZMZZPZPZMZZPPZPMPMPMZMZPMPZZZPMPMPMPPMZMPMPMZMZZPZMZZMZMMMZPPPZZPMMZZMMZMMMMMPMMMMPPMPPZPMPZMZPPMMZZMPZPZMMMPZMPZMZPPMZZMZZMZZZMZZMZMZZPMZZMMPMMZPMMZMZMZZZMPPPPZMZZPPPZPZMPMPMZMPMPPMMPPMMPMMPZZZMPPZPMPMPPPMPZZPPMPZMMZPMZPZZMMZPZPMMPZZPMZPZPMMMMPZZMPMZPPZZZMMPMZPZZPPZPMZMMPMZPZZPZPPPMZMZMPMZPZZPZPPPMPMZPPMPMMPPPMZMZMPPMZPPPZZPZMMMPPPPZZMZPPPZPMMZPMPMPMPZMZMPMZPMZMPZZMPZZZZPZZZMZZPMPPPPZPPMMZZMZZZZZMPPZZPZMPMMPZPPZPMZPMMPPPMMZMZPMMZZMZZPZMPPPMMPMMZZPMMZMZZZMMPZMPPPZPMPZZZMZPPMMPPMPZPMPZPMPPZMZMZZPMMPMZPMPZMZZZMMPPZMMPZZMZPZZMZMMZMPZMZMMPMMMPZZZPMPZZPMZZMMPZMMZMMPZPZPPMPPPPPPPMZPZZPPPZZPMMMMPZMPMZPMZPMPMZMPZMPPZPZPPPZMPPPPPPMMMMMMPZPMMMPMZPMMMZPPPZZPPMZMZZZPZMMZPZZMPZPMZZPPPPZPPPMPMZMZPZZPMPMMZZMPPMZMMPZMZZZMPMPZPPZMMPMZPPMPMMMMMPZMZMMPPMPMZZZPMPMMMPPMMZPZZMZPPPMPMPPPPMMPPMZPPMPZMZMPMMMPZMMMMZMZPMMPZZZPMPMMMPPPPZZZZZZMPPPPMZZMMPMPMMMMMPZZPZZMMZPMMZZMZZZZZMMZMPMZMPZZPPZMPMZZPPZPPMMMZPMZPPZPZPZMZMZMZZMPMPMPMPPMPZZZMPPPMMMPZZZZZZMPPMMPZZZPMZPZMZPZMMPMPMMPZZZPMMPZPPZZPMMZPMMMPPMZZPMZZMPPZZZZMPZMPMMPPMZPPMPMPPZMPPMMPPZZMPPZPPZPZMPPZPMZPPMZZMZPZPPMPPZMMMZMMZZPPPPPMZPPZMPZPPZMPZZZMZMMZPMPMZZZZPPZPPPZMZZZMZMMZMZMMPPZPZMZMPPMZZPMZZPPMMMPPPZMMPZPPMPZMMPPPZZPZPPPPPPMMMZZZZMZMZPMZZPZPPMZMPZMMPPMZPMZZPPPPZZZMZPMPPPMMZPZPMPZPMPZPPPMPMPZZMPMPMMZZPPPZMZPPZPPPMZPMMPZMZZMMZZPMZMMPMZMMMZMMZMMPPPMMPPZPPPMZMMZPMZMZMZPPZZZPZZPMMZPPPZPPMMPPMZZZZZMZZPPZMPMPZMZZPMZPMZMZMMMPMZMMPPMZPMPPPMMPZZPPZMPPPPZZZZZPPMMZZZZPZMPMZMMPMPMMMPZZMZZMZPPZMZPPPZZPPPPMZPPMPPMZZMZZMZPZPPPMZZPPPMMZZPMMPZZZPZMMPPZMMMMPPZPZMZPZZZMPPPZMPPZZPZPZZMMPMZZZPZMMPPMPPMPZZMMPZMZZPZZZZPPMMZZPZMZMPPZMPPZMPMPZMMZPPPMMMPZMMPZMMZPZZPMPMZZZPZPMZPPPPMPZMPZPMMMZMMPMZZMPMPZMMZZMMMPZZPPMZMZMPZMMPZZPZPPPMZPPZPMZMZZPZMZMPMMPMMZMMMZZMMZPZMPPPPPZPZPZMPMPMPZZZMMPMPZPZZMZZMPMZMMZPMMZMZPZZPMPMMPZPPZZPZMPPMMPMPZZZPMZZMZZZZZMPMMMMMMPMZPMPPZMPZPZMZPZPPMZMPMMZPZZPPPPMMZPZMZMZMZZMZPZZZPZPMZMZZPPMZZMZMPPZMPZMZMMPZMMMZPZMMMMPZZZPMZMMMMZPPZPZZPPPZPZZPZPZPMPMPPMMMMPMMMMZZMZPZMMZZPZMPMMPMZPMPZPZMZPZMZMZZPMPMPPMZMPMZPZPMZMMMMPPZMPPMZMZZMMPZPPMMZPZMMMMPMZPMMZZZZMZZZZPPPPMMZMZPZZMZPMZZPMMMZZZZPPZZZPMPMMMPZMZPMMPMPZZZMPPMMZPMZPPPMPZMZZMZMMZMZPZMMPPZMMMMZMPPPMZPMZMMMPZMZMPMPZPZZZMZZMMPPZMPMZPZMMMMPMPPMPMMZPPPZMZPZPMMMMZZMZMZPZZPPZZMZZPMPPPZPZMMZZMPPZPPPPMZZMPMPPPMZPMMMZZZPPMMMZZPPMZZPZZMPMMPZZZZZMPZMPZZZMZPMPZPMPZPPZMPZZPMPMMMMMMMPPMZMPZPZMZMZZPZPZPMMZZMPZMPMPPPMZMPPZZPZZMPMMMZPMZPZPMPMZZZPMPZPMPZPZZPPZZMZPMMMMMMPZPMPZMMPZPZPMZPZMMMZPZMPMPMMPPZPPMZZPPMZPPZPPMMZPMZMMPMZMMPPZMZPPPPMZZPMMPZPPMPZPPPPZMZPPZZMMZZPZPZPPPMMMPPPPZMPPZMPPMPPZZPZPPZMPZMMMZMZZZPZMZMPPZZPPZMPPPZMMPZMZMMZPZZPMMZZPZPPMZPZPPMMMMZPMPPZPZZZMPPPPMMZPPMZMZPMPMZMMPPZMPZZMMPZZPMMZMMZMMMMPZZPZMMPZZPPMZPZMZMMMZPMPPPMMZZPZPPMPMZMZPMMPZZZMPZZPMZZZZZPZPPPPMPPZMPMPPPZPMZPMPMZPPMZPZZMMZPPMPMZZMZMZPPZPZMMPPPMPZPPZPPPPPZPMZPMMZMPMZPMMPPPPPMPPZMMMMZMPMMZZMMZPMPPPMMZZPMPMZMPZZZMMPZZMPPPPMPMPZMZMZZMMPMZZMPZPPPPMZPMMPPMMMZZPMPMPPMZPZPMPZZZPZMPZMZMPZPZZZPZMZZZPPPZZPPZZMPZMPMPZMZZZZPZMZMPPMMZPZMMZZZPPPPZZMMZPZPMPZZMMZMPZZMZZPPZZPZZMPPMMZZMPZZMZZPMZZMZZPMPPPMMMZZMPZPZZZZPMMPPZPMMPPZZMPZZPPMPZMPPMPPPZPZMMPMMMPPZPZPPZZMPZMZZZZPMPMPPZMZMZPPMMMZPZZMZMZZMMMZMZZPZZMMMZPMPPZPPPZZMPMZMPZMPZMZMPPPMMZZZZMPZMPPPZPMZPZMPZZZMZZZPPZMZZPPZMPPPPPMPMZPMMZMZPMMMMZPMZPMMPPMMMPPZZPMZZZMMMMPZZZZPMPMMMZPZPPZMMPMPMPZMZZZMPZZPPPPPPMZZZZPMZZZMPZZZZZPZPMZMMZZMZZMMMPMMZPZMZMPZPMMMMMZZZMMZMZPPZPPMZPZPPPMPZMZZPZPPZZMMPMPMZZZPMMPPMMZPZPZMZMMPMPPPPPZMPMPPMPPMZMZZPPZMZPPZZZPZMZZMPPZMMZPPMMZMZMMZMPPMPZMZZMPZPPZPZPPZZPZZZMZPZMPPZMMPZMPZMZPMMPZZZZMMPZZPMZZZPMPPZPPZPPZZMPZPMMPPPZPZPPZZZZZPPPMPMZMPZPZPPZZMZZPPMZMPPPMPMZMZMMZZMPMPZPZPPZPPZPZZMPZPZZZZPPZZMZMZPZZZZPPPMZZPPZMZMZPPZMZZMPPZMPZZZMMZPPMMMPMZPPPMMZZPZPZPZMMPPZMMPMMPZPMPZMZZPMZPMMPPPMMZPMZMPMMPZZZZPZMPMZMZPPZZZMMPZPZMPZMPZPPMMZZPMMMZPPMZZPMZZZMZPPPZMPZZMMPMZZMZMPMMPPMMZZMMZZPZZMPMPMZPZPMPZPPPPPPMPPMZZZZPMMPPMZPMZPZZMMMPPPZZZPZPMZZZZPZZZMMZZZMPZPMMZZMPPPZZPPPZPMPPMZZMZZPMMPPPPMPPMMPMPPZZPPPPPZZPMPZMZPZMPPPPMPMPMMMPPZPMMZZPZMMZMMZPZZPPPZZMPMMMMZMMMZZPMMMMPMMMPMPMZMMMPMZZMPPPZMMPPZMPMZMMZZMPPMMMPZPMZZMZZMPMZZZZZZMMPMPPZPMZMZMZZPMMPMMZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZPZPPPZZMMPPMZPMMZPPZZZZZZZPZZZZZZZZZZZZZZZZZZZZZZZZZZZPZZZZZZZZZZZZZZZZZZZZZZZZZMPMMMMZMPPZZMPPPPMMPZZMPMZPMZPPPPMPPMZMMPPMPPPZMMMMPZPZZMZPPPPZZZPPMZZPMZZPPMPZMMPPPMMPZMMPZZPPZPZPZPPMMMPZMZZZPZPPMPMPPPMPZPMZZPMZPMZZMZPZZPZPMPPZMMMMZMPPPPPMPMZZPZPZZZZZPZMMZZZPZZPPMZMZMMMMPPPMPZPPMMZPMPMPMZMPMPMMZMPMPPPMMPMPMZPPPMPPPPZPMMZMPPPPZZMPPMZPMZPMZPMZPMPMMPZMZPPPMMMZPMZPZMPZPPZMZMZZZMPPMMPZZZMPPPMZPPPMPPMZZZMMZZPMMPMMMMPPPMMMZMPPPMPPZMMZZPPMZPMZMPMPZMPMMPZPPMPMMPPMZZZMMZZPPZMZZMMMPPMMZPMPZPZMZMMMZZMMPZZZPPZZMZMPPMMZMMMZZPZZPZMPPMPZZZZPPZMMPMZZMMPZMZPZMZZZZZZZZZZZZZZZZZZPPPZZZMMPMZZPMPZZMZMZPZPZZZMMZPMZPZMMZZZMZMMMPPZMZZMPZPZZPZPMZZPPPPZPZZZPPMPZZPPPZPMMMZMMZMMZPZZMMMPMPZZPPPMZMPMPPZPZZPMMMMZZMMPZZZZPMPZPPMZZMZZMPPZZMZZPPPPMMPZMPZPMMPPZZZMPPMMPZMPMZZZMZPMZPPZPMPMPZMZMPZPZZPZPMZZZPZMMZMZPMPPPZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
-    const SYMBOLS_STATE_EXPECTED: &str = "PPPMZMMMPZMZMMMZPMZPMZPMMMZPMPPZZMMMMMZMPZPZZPZPZZMZMMPZMMZMPMPMZZPPPMZZMZZZMPPMZPMPPMMMMPPPMPPPZPMPMMPPZZPZZZZPPZMPZPZPMZPPPPMMMMPZPMPZPZMZPZPZMMMPZMPMPMZZZPPMPZZPZMPMPPMZPMPMZMPZZZZMMZPZZZZMZZPPMZZMZZPPMPMMMZPPMPMZMZPPZPZPPPZMMZZMZPPMMPMMPZPMZMMMZZMZMPPZZMZMPMMZZPZZZZPZPPMPZMPMZMPPPZZZPPZMPPPPZZPZMZPMMZPPPZMMPMZPZZMMMPZZZMZPMPMZMZZMPPPZZZZMMZMMMMZPZPZZZZMMZPMPZPPMMZPMPMPPMZPPPPMPPPPPMZMMZZZZZMPMZMZPPMMMZMZMMMZPMPZPMZZPZZZMMPMPZZPZZZZMPPMMPMPZMPPPPMPMPZZPPPMPMPPZPZZMPMZMZZZZZZZPPPMZZPPZMPZZZPPPPPPMZZPPMMZPMMMZZMPZMPPPZMPMPMPPMMZZZPZZZZMMPZZZMZPMPZPPZMZMZMZZPZZZMZMZMPMZPPZPPMPMPZPPMPPZPMMPZPZZZZMPPZMMZZPMPPZPMPZZMMZMZZMMMZZPZPMMZMPMZMZMMPZZMZPZMMZMPMPZMMMMMZPMMMMMMZZZPPZPZPPZPPPMZPZPMMMPZMMZZPZPZPPZZPPZPPMPMZMMPPZPZPZPM";
+    const SYMBOLS_MID_EXPECTED: &str = "PPPMZMMMPZMZMMMZPMZPMZPMMMZPMPPZZMMMMMZMPZPZZPZPZZMZMMPZMMZMPMPMZZPPPMZZMZZZMPPMZPMPPMMMMPPPMPPPZPMPMMPPZZPZZZZPPZMPZPZPMZPPPPMMMMPZPMPZPZMZPZPZMMMPZMPMPMZZZPPMPZZPZMPMPPMZPMPMZMPZZZZMMZPZZZZMZZPPMZZMZZPPMPMMMZPPMPMZMZPPZPZPPPZMMZZMZPPMMPMMPZPMZMMMZZMZMPPZZMZMPMMZZPZZZZPZPPMPZMPMZMPPPZZZPPZMPPPPZZPZMZPMMZPPPZMMPMZPZZMMMPZZZMZPMPMZMZZMPPPZZZZMMZMMMMZPZPZZZZMMZPMPZPPMMZPMPMPPMZPPPPMPPPPPMZMMZZZZZMPMZMZPPMMMZMZMMMZPMPZPMZZPZZZMMPMPZZPZZZZMPPMMPMPZMPPPPMPMPZZPPPMPMPPZPZZMPMZMZZZZZZZPPPMZZPPZMPZZZPPPPPPMZZPPMMZPMMMZZMPZMPPPZMPMPMPPMMZZZPZZZZMMPZZZMZPMPZPPZMZMZMZZPZZZMZMZMPMZPPZPPMPMPZPPMPPZPMMPZPZZZZMPPZMMZZPMPPZPMPZZMMZMZZMMMZZPZPMMZMPMZMZMMPZZMZPZMMZMPMPZMMMMMZPMMMMMMZZZPPZPZPPZPPPMZPZPMMMPZMMZZPZPZPPZZPPZPPMPMZMMPPZPZPZPM";
 
     const HASH_EXPECTED: &str = "MQEXNUUUWGANWBAJROSQGZMZZFYGPEVMUPDC9DBJHMNBGCHCNSGZLBCTVUYB9WARIYXLTWVYHJLSZHPPJ";
     
     #[test]
-    fn test_tx2trit_to_absorb() {
-
+    fn test_const() {
         assert_eq!(TX_LENGTH, TX_STRING.len());
+
+        assert_eq!(TRITS_LENGTH, SYMBOLS_TRITS_EXPECTED.len());
+        assert_eq!(STATE_LENGTH, SYMBOLS_MID_EXPECTED.len());
+        assert_eq!(TRYTE_LENGTH, HASH_EXPECTED.len());
+    }
+
+    #[test]
+    fn test_tx2trit_to_hash2tryte() {
 
         // tx2trit
         // TX(string TX_LENGTH:2673) -- string to [u8] --> TRITS(-1/0/1 TRITS_LENGTH:TX_LENGTH*3)
@@ -173,24 +548,44 @@ mod tests {
         assert_eq!(TRITS_LENGTH, symbols_trits.len());
 
         // absorb(and transform)
-        // TRITS -- [u8] to [u8] --> STATE(-1/0/1 STATE_LENGTH)
-        let state = absorb(trits, TRITS_LENGTH);
-        let symbols_state = trits2symbol_state(state);
+        // TRITS -- [u8] to [u8] --> MID(-1/0/1 STATE_LENGTH)
+        let mid = absorb(trits, TRITS_LENGTH);
+        let symbols_mid = trits2symbol_mid(mid);
 
-        assert_eq!(SYMBOLS_STATE_EXPECTED, symbols_state);
-        assert_eq!(STATE_LENGTH, symbols_state.len());
+        assert_eq!(SYMBOLS_MID_EXPECTED, symbols_mid);
+        assert_eq!(STATE_LENGTH, symbols_mid.len());
 
         // STATE_LENGTH : 3 * HASH_LENGTH
 
         // absorb(and transform)
-        // STATE -- [u8] to String --> TRYTE(9+A-Z HASH_LENGTH / 3)
-        let tryte = hash2tryte(state);
+        // MID -- [u8] to String --> TRYTE(9+A-Z HASH_LENGTH / 3)
+        let tryte = hash2tryte(mid);
         let symbols_tryte = tryte2symbol(tryte);
 
         assert_eq!(HASH_EXPECTED, symbols_tryte);
         assert_eq!(TRYTE_LENGTH, tryte.len());
     }
 
+    #[test]
+    fn test_para() {
+        const MID_EXPECTS: [i8; STATE_LENGTH] = [-1,-1,1,0,0,-1,0,1,0,0,1,0,0,1,0,1,-1,0,-1,1,-1,1,0,1,0,-1,0,-1,1,1,-1,1,-1,1,0,1,-1,0,-1,1,1,-1,1,-1,1,0,1,-1,-1,0,1,0,1,-1,0,1,1,-1,-1,1,-1,1,-1,-1,0,-1,-1,-1,1,-1,0,0,0,1,0,0,-1,0,1,1,-1,1,0,-1,0,1,1,-1,1,1,0,-1,1,-1,1,-1,0,0,0,-1,-1,1,1,1,-1,-1,1,-1,0,-1,-1,-1,0,0,1,0,-1,1,0,-1,0,0,0,-1,1,1,1,1,1,1,1,0,-1,-1,0,0,1,0,-1,0,-1,0,0,-1,-1,-1,0,1,0,0,0,-1,1,1,0,0,-1,-1,-1,1,0,-1,-1,-1,1,0,1,0,-1,-1,0,1,-1,1,0,1,0,-1,0,-1,1,-1,1,0,1,0,0,1,1,0,1,1,-1,1,-1,1,0,0,0,0,-1,1,1,0,0,0,0,-1,1,1,1,0,-1,-1,0,0,-1,1,-1,0,-1,0,0,0,0,1,0,0,1,-1,-1,1,1,-1,-1,-1,-1,1,1,-1,1,1,-1,0,0,1,0,1,1,0,-1,0,-1,1,1,-1,1,-1,0,1,-1,1,1,1,1,1,1,0,1,-1,1,1,-1,0,-1,0,-1,1,-1,-1,-1,1,-1,0,0,1,0,-1,-1,1,0,-1,0,0,1,0,1,-1,-1,1,-1,1,-1,0,0,0,0,0,-1,-1,0,1,1,1,1,1,1,1,1,1,1,0,0,-1,0,0,-1,-1,-1,1,-1,-1,1,-1,0,-1,1,1,0,0,-1,-1,-1,0,1,-1,-1,0,-1,1,1,1,1,1,0,1,1,1,-1,1,0,-1,-1,0,0,1,1,-1,-1,-1,1,-1,-1,1,1,0,1,1,1,-1,0,0,-1,1,-1,-1,1,0,-1,1,0,0,0,-1,0,-1,1,1,0,1,-1,1,-1,0,1,0,1,-1,1,-1,0,0,0,0,-1,-1,0,-1,-1,0,-1,1,1,1,0,1,-1,0,0,1,1,0,1,1,-1,1,-1,0,1,0,-1,1,0,0,0,1,-1,0,-1,1,0,-1,-1,-1,-1,-1,0,1,1,0,0,1,1,1,1,1,1,0,-1,0,0,1,0,1,0,1,1,0,1,1,0,-1,0,1,0,0,0,1,1,0,0,1,0,1,-1,1,-1,-1,1,-1,1,-1,-1,1,1,1,-1,-1,1,1,0,-1,0,1,-1,0,-1,-1,-1,0,-1,-1,-1,1,1,0,1,1,0,0,-1,0,1,1,0,0,1,0,0,0,0,-1,-1,0,-1,0,-1,1,-1,-1,1,-1,0,0,0,-1,-1,-1,1,1,0,-1,0,-1,0,1,1,-1,0,-1,1,1,0,-1,-1,0,0,1,0,1,1,0,1,-1,1,1,1,1,0,0,-1,1,1,-1,1,1,0,-1,-1,0,0,-1,1,0,0,1,0,-1,1,-1,0,1,-1,1,1,1,0,0,1,0,1,-1,0,0,1,0,-1,1,-1,0,1,0,1,-1,0,-1,-1,1,0,-1,-1,1,-1,0,0,0,-1,0,0,0,0,1,1,-1,0,-1,1,-1,-1,1,-1,0,1,1,0,-1,1,-1,0,-1,-1,-1,0,1,0,1,0,0,-1,-1,0,-1,0,0,0,0,-1,0,-1,-1,1,1,-1,-1,1,1,0,-1,1,1,-1,0,-1,-1,1,1,-1,1,0,0,-1,0,-1,1,-1,1,-1,1,1,1,0,-1,-1,-1,-1,-1,1,0,-1];
+
+        const LMID_EXPECTED: [u128; STATE_LENGTH] = [0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff];
+        const HMID_EXPECTED: [u128; STATE_LENGTH] = [0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0x0000000000000000_0000000000000000,0xffffffffffffffff_ffffffffffffffff,0xffffffffffffffff_ffffffffffffffff,0x0000000000000000_0000000000000000];
+
+        let (lmid, hmid) = para(MID_EXPECTS);
+
+        for count in 0..STATE_LENGTH {
+            assert_eq!(LMID_EXPECTED[count], lmid[count]);
+        }
+
+        for count in 0..STATE_LENGTH {
+            assert_eq!(HMID_EXPECTED[count], hmid[count]);
+        }
+
+    }
+
+    // Test Utils
     fn tryte2symbol(tryte: [u8; TRYTE_LENGTH]) -> String {
         let converted: String = String::from_utf8(tryte.to_vec()).unwrap();
     
@@ -207,7 +602,7 @@ mod tests {
         trits_symbol.iter().collect()
     }
 
-    fn trits2symbol_state(trits: [i8; STATE_LENGTH]) -> String
+    fn trits2symbol_mid(trits: [i8; STATE_LENGTH]) -> String
     {
         let mut trits_symbol: [char; STATE_LENGTH] = ['0'; STATE_LENGTH];
         for count in 0..STATE_LENGTH {
@@ -232,4 +627,34 @@ mod tests {
 
         trite_symbol
     }
+
+    fn symbol2trits_mid(symbol: &str) -> [i8; STATE_LENGTH] {
+        let mut trits: [i8; STATE_LENGTH] = [0; STATE_LENGTH];
+
+        let mut count = 0;
+        for trite in symbol.to_string().chars() {
+            trits[count] = symbol2trite(trite);
+            count += 1;
+        }
+
+        trits
+    }
+
+    fn symbol2trite(symbol: char) -> i8 {
+        
+        let trite;
+        if symbol == 'M' {
+            trite = -1;
+        } else if symbol == 'P' {
+            trite = 1;
+        } else if symbol == 'Z' {
+            trite = 0;
+        } else {
+            panic!("unknown trits {}", symbol);
+        } 
+
+        trite
+    }
+
+
 }
