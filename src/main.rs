@@ -36,24 +36,38 @@ const TX_LENGTH: usize = 2673;
 const TRITS_LENGTH: usize = 3 * TX_LENGTH;
 
 fn main() {
-    //let trits = tx2trit(TX_STRING);
-    //let state = absorb(trits, TRITS_LENGTH);
-    //let _tryte = hash2tryte(state);
+    use chrono::{Utc, DateTime, Duration};
+    
+    let trits = tx2trit(TX_STRING);
+    let mid = absorb(trits, TRITS_LENGTH);
+    let tryte = hash2tryte(mid);
+    let symbols_tryte = tryte2symbol(tryte);
 
-    /*
-    let (lmid_result, hmid_result) = transform64(LMID, HMID);
-    for count in 0..5 {
-        println!("lmid_result {} {:x}", count, lmid_result[count]);
+    println!("hash {}", symbols_tryte);
+
+    let utc_datetime_start: DateTime<Utc> = Utc::now();
+    let (count, nonce) = pwork(TX_STRING, 18);
+    let utc_datetime_end: DateTime<Utc> = Utc::now();
+
+    let duration: Duration = utc_datetime_end - utc_datetime_start;
+    let secs = duration.num_seconds();
+    let khash_per_sec = count / 1000 / (secs as i128);
+
+    println!("count={} kHash/sec: {}", count, khash_per_sec);
+    let symbol_nonce = trits2symbol_nonce(nonce);
+    println!("nonce {}", symbol_nonce);
+    println!("nonce[0] {}", nonce[0]);
+
+    let mut trits_and_nonce = trits;
+    for count in 0..HASH_LENGTH {
+        trits_and_nonce[TX_LENGTH * 3 - HASH_LENGTH + count] = nonce[count];
     }
 
-    for count in 0..5 {
-        println!("hmid_result {} {:x}", count, hmid_result[count]);
-    }*/
+    let nonce_mid = absorb(trits_and_nonce, TRITS_LENGTH);
+    let nonce_tryte = hash2tryte(nonce_mid);
+    let symbols_nonce_tryte = tryte2symbol(nonce_tryte);
 
-    //let nonce = seri(LMID, HMID, 56);
-
-    // let (count, nonce) = loop_cpu(LMID_LOOP_CPU_IN, HMID_LOOP_CPU_IN, 18);
-
+    println!("PoWed hash is {}", symbols_nonce_tryte);
 }
 
 const CHAR_9_U8: u8 = '9' as u8;
@@ -79,7 +93,6 @@ const L_BITS_128: u128 = 0x0000000000000000_0000000000000000;
 const H_BITS_128: u128 = 0xFFFFFFFFFFFFFFFF_FFFFFFFFFFFFFFFF;
 
 fn tx2trit(tx: &str) -> [i8; TRITS_LENGTH] {
-    println!("tx2trit");
 
     let tx_bytes = tx.as_bytes();
     if tx_bytes.len() != TX_LENGTH {
@@ -190,98 +203,8 @@ fn pwork(tx: &str, mwm: i64) -> (i128, [i8; HASH_LENGTH]){
     (count_sse, nonce)
 }
 
-/*
-long long int pwork(char tx[], int mwm, char nonce[])
-{
-    long long int countSSE = 0;
-    int i = 0;
-    char trits[TX_LENGTH * 3] = { 0 }, mid[STATE_LENGTH] = { 0 };
-
-    tx2trit(tx, trits);
-    absorb(mid, trits, TX_LENGTH * 3 - HASH_LENGTH);
-    int procs = getCpuNum();
-    if (procs>1){
-        // procs--;
-    }
-    fprintf(stderr, "core num:%d\n", procs);
-#ifdef _WIN32
-    HANDLE *thread = (HANDLE*)calloc(sizeof(HANDLE), procs);
-#else
-    pthread_t* thread = (pthread_t*)calloc(sizeof(pthread_t), procs);
-#endif
-    PARAM* p = (PARAM*)calloc(sizeof(PARAM), procs);
-    for (i = 0; i < procs; i++) {
-        p[i].mid = mid;
-        p[i].mwm = mwm;
-        p[i].n = i;
-#ifdef _WIN32
-        unsigned int id=0;
-        thread[i] = (HANDLE)_beginthreadex(NULL, 0, pwork_, (LPVOID)&p[i], 0, NULL);
-        if (thread[i]==NULL) {
-#else
-        int ret = pthread_create(&thread[i], NULL, pwork_, &p[i]);
-        if (ret != 0) {
-#endif
-            fprintf(stderr, "can not create thread\n");
-            exit(EXIT_FAILURE);
-        }
-    }
-    for (i = 0; i < procs; i++) {
-#ifdef _WIN32
-        int ret = WaitForSingleObject( thread[i], INFINITE );
-        CloseHandle(thread[i]);
-        if (ret == WAIT_FAILED) {
-#else
-        int ret = pthread_join(thread[i], NULL);
-        if (ret != 0) {
-#endif
-            fprintf(stderr, "can not join thread\n");
-            exit(EXIT_FAILURE);
-        }
-        if (p[i].count >= 0) {
-            memcpy(nonce, p[i].nonce, HASH_LENGTH);
-            countSSE += p[i].count;
-        }
-        else {
-            countSSE += -p[i].count + 1;
-        }
-    }
-    free(thread);
-    free(p);
-
-    return countSSE;
-}
-*/
-
 fn pwork_child(mid: [i8; STATE_LENGTH], mvm: i64, n: i64) -> (i128, [i8; HASH_LENGTH]) {
-    // 
 
-    //let lmid: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
-    //let hmid: [u128; STATE_LENGTH] = [0; STATE_LENGTH];
-
-    /*
-    #define LOW00 0xDB6DB6DB6DB6DB6DuLL //0b1101101101101101101101101101101101101101101101101101101101101101L;
-    #define HIGH00 0xB6DB6DB6DB6DB6DBuLL //0b1011011011011011011011011011011011011011011011011011011011011011L;
-    #define LOW10 0xF1F8FC7E3F1F8FC7uLL //0b1111000111111000111111000111111000111111000111111000111111000111L;
-    #define HIGH10 0x8FC7E3F1F8FC7E3FuLL //0b1000111111000111111000111111000111111000111111000111111000111111L;
-    #define LOW20 0x7FFFE00FFFFC01FFuLL //0b0111111111111111111000000000111111111111111111000000000111111111L;
-    #define HIGH20 0xFFC01FFFF803FFFFuLL //0b1111111111000000000111111111111111111000000000111111111111111111L;
-    #define LOW30 0xFFC0000007FFFFFFuLL //0b1111111111000000000000000000000000000111111111111111111111111111L;
-    #define HIGH30 0x003FFFFFFFFFFFFFuLL //0b0000000000111111111111111111111111111111111111111111111111111111L;
-    #define LOW40 0xFFFFFFFFFFFFFFFFuLL //0b1111111111111111111111111111111111111111111111111111111111111111L;
-    #define HIGH40 0xFFFFFFFFFFFFFFFFuLL //0b1111111111111111111111111111111111111111111111111111111111111111L;
-    
-    #define LOW01 0x6DB6DB6DB6DB6DB6uLL //0b0110110110110110110110110110110110110110110110110110110110110110
-    #define HIGH01 0xDB6DB6DB6DB6DB6DuLL //0b1101101101101101101101101101101101101101101101101101101101101101
-    #define LOW11 0xF8FC7E3F1F8FC7E3uLL //0b1111100011111100011111100011111100011111100011111100011111100011
-    #define HIGH11 0xC7E3F1F8FC7E3F1FuLL //0b1100011111100011111100011111100011111100011111100011111100011111
-    #define LOW21 0xC01FFFF803FFFF00uLL //0b1100000000011111111111111111100000000011111111111111111100000000
-    #define HIGH21 0x3FFFF007FFFE00FFuLL //0b0011111111111111111100000000011111111111111111100000000011111111
-    #define LOW31 0x00000FFFFFFFFFFFuLL //0b0000000000000000000011111111111111111111111111111111111111111111
-    #define HIGH31 0xFFFFFFFFFFFE0000uLL //0b1111111111111111111111111111111111111111111111100000000000000000
-    #define LOW41 0x000000000001FFFFuLL //0b0000000000000000000000000000000000000000000000011111111111111111
-    #define HIGH41 0xFFFFFFFFFFFFFFFFuLL //0b1111111111111111111111111111111111111111111111111111111111111111
-*/
     let (mut lmid, mut hmid) = para(mid);
     lmid[0] = 0x6DB6DB6DB6DB6DB6_DB6DB6DB6DB6DB6D; // LOW01  LOW00
     hmid[0] = 0xDB6DB6DB6DB6DB6D_B6DB6DB6DB6DB6DB; // HIGH01 HIGH00
@@ -336,7 +259,7 @@ fn seri(lmid: [u128; STATE_LENGTH], hmid: [u128; STATE_LENGTH], n: i32) -> [i8; 
     let mut n_cpy = n;
     let mut index = 0;
     if n_cpy > 63 {
-        n_cpy -= 63;
+        n_cpy -= 64;
         index = 1;
     }
 
@@ -345,11 +268,9 @@ fn seri(lmid: [u128; STATE_LENGTH], hmid: [u128; STATE_LENGTH], n: i32) -> [i8; 
     for count in 0..HASH_LENGTH {
 
         let lc = unsafe { std::mem::transmute::<u128, [u64; 2]>(lmid[count]) };
-        //_mm_store_si128 ((__m128i*)c,low[i]);
         let ll = (lc[index] >> n_cpy) & BITS_64_1;
         
         let hc = unsafe { std::mem::transmute::<u128, [u64; 2]>(hmid[count]) };
-        //_mm_store_si128 ((__m128i*)c,high[i]);
         let hh = (hc[index] >> n_cpy) & BITS_64_1;
         
         if hh == 0 && ll == 1 {
@@ -594,6 +515,37 @@ fn para(mid: [i8; STATE_LENGTH]) -> ([u128; STATE_LENGTH], [u128; STATE_LENGTH])
     (lmid, hmid)
 }
 
+fn tryte2symbol(tryte: [u8; TRYTE_LENGTH]) -> String {
+    let converted: String = String::from_utf8(tryte.to_vec()).unwrap();
+
+    converted
+}
+
+fn trits2symbol_nonce(trits: [i8; HASH_LENGTH]) -> String
+{
+    let mut trits_symbol: [char; HASH_LENGTH] = ['0'; HASH_LENGTH];
+    for count in 0..HASH_LENGTH {
+        trits_symbol[count] = trite2char(trits[count]);
+    }
+
+    trits_symbol.iter().collect()
+}
+
+fn trite2char(trite: i8) -> char {
+    
+    let trite_symbol;
+    if trite == -1 {
+        trite_symbol = 'M';
+    } else if trite == 1 {
+        trite_symbol = 'P';
+    } else if trite == 0 {
+        trite_symbol = 'Z';
+    } else {
+        panic!("unknown trits {}", trite);
+    } 
+
+    trite_symbol
+}
 
 #[cfg(test)]
 mod tests {
@@ -778,10 +730,14 @@ mod tests {
 
 
     // Test Utils
-    fn tryte2symbol(tryte: [u8; TRYTE_LENGTH]) -> String {
-        let converted: String = String::from_utf8(tryte.to_vec()).unwrap();
-    
-        converted
+    fn trits2symbol_nonce(trits: [i8; HASH_LENGTH]) -> String
+    {
+        let mut trits_symbol: [char; HASH_LENGTH] = ['0'; HASH_LENGTH];
+        for count in 0..HASH_LENGTH {
+            trits_symbol[count] = trite2char(trits[count]);
+        }
+
+        trits_symbol.iter().collect()
     }
 
     fn trits2symbol_tryte(trits: [i8; TRITS_LENGTH]) -> String
