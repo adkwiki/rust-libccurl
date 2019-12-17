@@ -372,13 +372,62 @@ fn loop_cpu(lmid: &[u128; STATE_LENGTH], hmid: &[u128; STATE_LENGTH], mvm: i64) 
     
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if is_x86_feature_detected!("sse") {
+        if is_x86_feature_detected!("avx2") {
+            println!("detected avx2");
+            return unsafe { loop_cpu_avx2(lmid, hmid, mvm) };
+        } else if is_x86_feature_detected!("sse") {
             println!("detected sse");
             return unsafe { loop_cpu_sse(lmid, hmid, mvm) };
         }
     }
 
     loop_cpu_fallback(lmid, hmid, mvm)
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn loop_cpu_avx2(lmid: &[u128; STATE_LENGTH], hmid: &[u128; STATE_LENGTH], mvm: i64) -> (i128, [i8; HASH_LENGTH]) {
+
+    let mut nonce: [i8; HASH_LENGTH] = [0; HASH_LENGTH];
+
+    let mut count = 0;
+
+    let mut lmid_tmp: [__m128i; STATE_LENGTH] = [_mm_setzero_si128(); STATE_LENGTH];
+    let mut hmid_tmp: [__m128i; STATE_LENGTH] = [_mm_setzero_si128(); STATE_LENGTH];
+    for count in 0..STATE_LENGTH {
+        lmid_tmp[count] = std::mem::transmute::<u128, __m128i>(lmid[count]);
+        hmid_tmp[count] = std::mem::transmute::<u128, __m128i>(hmid[count]);
+    }
+
+    loop {
+        let (incr_ret, lmid_incr, hmid_incr) = incr_sse(&lmid_tmp, &hmid_tmp);
+        if incr_ret {
+            break;
+        }
+
+        let (lcpy_tr, hcpy_tr) = transform64_avx2(&lmid_incr, &hmid_incr);
+
+        let n = check_sse(&lcpy_tr, &hcpy_tr, mvm);
+
+        // TODO DEBUG
+        if count % 10000 == 0 {
+            println!("count {} n {}", count, n);
+        }
+
+        if n >= 0 {
+            // TODO DEBUG
+            println!("count {} n {}", count, n);
+            nonce = seri_sse(&lmid_incr, &hmid_incr, n);
+            return (count * 128, nonce);
+        }
+
+        lmid_tmp = lmid_incr;
+        hmid_tmp = hmid_incr;
+
+        count += 1;
+    }
+
+    (-count * 128 - 1, nonce)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -483,6 +532,12 @@ unsafe fn transform64_sse(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STATE
             let t1 = INDICES[j];
             let t2 = INDICES[j + 1];
 
+            // TODO Debug
+            //if t1 == j || t2 == j {
+            //    // j = 0, 243, 486
+            //    println!("eq round j t1 t2 {} {} {} {}", _round, j, t1, t2);
+            //}
+
             let alpha = lmid_tmp[side_from][t1];
             let beta = hmid_tmp[side_from][t1];
             let gamma = hmid_tmp[side_from][t2];
@@ -520,6 +575,95 @@ unsafe fn transform64_sse(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STATE
 
         // (alpha ^ gamma) | delta
         hmid_tmp[side_to][k] = _mm_or_si128(_mm_xor_si128(alpha,gamma),delta);
+    }
+
+    (lmid_tmp[side_to], hmid_tmp[side_to])
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn transform64_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STATE_LENGTH]) -> ([__m128i; STATE_LENGTH], [__m128i; STATE_LENGTH]) {
+    
+    let mut side_from: usize = 0;
+    let mut side_to: usize = 1;
+
+    let mut lmid_tmp: [[__m128i; STATE_LENGTH]; 2] = [*lmid, [_mm_setzero_si128(); STATE_LENGTH]];
+    let mut hmid_tmp: [[__m128i; STATE_LENGTH]; 2] = [*hmid, [_mm_setzero_si128(); STATE_LENGTH]];
+ 
+    let one: __m256i = _mm256_set_epi64x(0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64);
+
+    for _round in 0..26 {
+
+        let mut j = 0;
+        loop {
+            if j >= STATE_LENGTH {
+                break;
+            }
+
+            let t1 = INDICES[j];
+            let t2 = INDICES[j + 1];
+            let t3 = INDICES[j + 2];
+
+            let alpha: __m256i = _mm256_set_m128i(lmid_tmp[side_from][t1], lmid_tmp[side_from][t2]);
+            let beta: __m256i = _mm256_set_m128i(hmid_tmp[side_from][t1], hmid_tmp[side_from][t2]);
+            let gamma: __m256i = _mm256_set_m128i(hmid_tmp[side_from][t2], hmid_tmp[side_from][t3]);
+            let epsilon: __m256i = _mm256_set_m128i(lmid_tmp[side_from][t2], lmid_tmp[side_from][t3]);
+
+            let nalpha = _mm256_andnot_si256(alpha, gamma);
+            let delta =  _mm256_andnot_si256(nalpha, _mm256_xor_si256(epsilon,beta)); 
+
+            // !delta & u128_MAX
+            let lmid_temp_256 = _mm256_andnot_si256(delta, one);
+            let lmid_temp_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(lmid_temp_256);
+            lmid_tmp[side_to][j] = lmid_temp_128[0];
+            lmid_tmp[side_to][j + 1] = lmid_temp_128[1];
+
+            // (alpha ^ gamma) | delta
+            let hmid_temp_256 = _mm256_or_si256(_mm256_xor_si256(alpha,gamma),delta);
+            let hmid_temp_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(hmid_temp_256);
+            hmid_tmp[side_to][j] = hmid_temp_128[0];
+            hmid_tmp[side_to][j + 1] = hmid_temp_128[1];
+
+            j = j + 2;
+        }
+
+        // 0 -> 1, 1 -> 0 
+        side_from = side_from ^ 1;
+        side_to = side_to ^ 1;
+        
+    }
+
+    let mut k = 0;
+    loop {
+        if k >= HASH_LENGTH {
+            break;
+        }
+
+        let t1 = INDICES[k];
+        let t2 = INDICES[k + 1];
+        let t3 = INDICES[k + 2];
+
+        let alpha: __m256i = _mm256_set_m128i(lmid_tmp[side_from][t1], lmid_tmp[side_from][t2]);
+        let beta: __m256i = _mm256_set_m128i(hmid_tmp[side_from][t1], hmid_tmp[side_from][t2]);
+        let gamma: __m256i = _mm256_set_m128i(hmid_tmp[side_from][t2], hmid_tmp[side_from][t3]);
+        let epsilon: __m256i = _mm256_set_m128i(lmid_tmp[side_from][t2], lmid_tmp[side_from][t3]);
+
+        let nalpha = _mm256_andnot_si256(alpha, gamma);
+        let delta =  _mm256_andnot_si256(nalpha, _mm256_xor_si256(epsilon,beta)); 
+
+        // !delta & u128_MAX
+        let lmid_temp_256 = _mm256_andnot_si256(delta, one);
+        let lmid_temp_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(lmid_temp_256);
+        lmid_tmp[side_to][k] = lmid_temp_128[0];
+        lmid_tmp[side_to][k + 1] = lmid_temp_128[1];
+
+        // (alpha ^ gamma) | delta
+        let hmid_temp_256 = _mm256_or_si256(_mm256_xor_si256(alpha,gamma),delta);
+        let hmid_temp_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(hmid_temp_256);
+        hmid_tmp[side_to][k] = hmid_temp_128[0];
+        hmid_tmp[side_to][k + 1] = hmid_temp_128[1];
+
+        k = k + 2;
     }
 
     (lmid_tmp[side_to], hmid_tmp[side_to])
@@ -857,8 +1001,6 @@ mod tests {
         // simd
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            // Note that this `unsafe` block is safe because we're testing
-            // that the `avx2` feature is indeed available on our CPU.
             if is_x86_feature_detected!("sse") {
 
                 let mut lmid_i128: [__m128i; STATE_LENGTH] = unsafe { [_mm_setzero_si128(); STATE_LENGTH] };
@@ -881,6 +1023,31 @@ mod tests {
 
             } else {
                 panic!("not support sse");
+            }
+
+
+            if is_x86_feature_detected!("avx2") {
+
+                let mut lmid_i128: [__m128i; STATE_LENGTH] = unsafe { [_mm_setzero_si128(); STATE_LENGTH] };
+                let mut hmid_i128: [__m128i; STATE_LENGTH] = unsafe { [_mm_setzero_si128(); STATE_LENGTH] };
+
+                for count in 0..STATE_LENGTH {
+                    lmid_i128[count] = unsafe { std::mem::transmute::<u128, __m128i>(LMID_TRANSFORM64[count]) };
+                    hmid_i128[count] = unsafe { std::mem::transmute::<u128, __m128i>(HMID_TRANSFORM64[count]) };
+                }
+
+                let (lmid_sse_result, hmid_sse_result) = unsafe { transform64_avx2(&lmid_i128, &hmid_i128) };
+
+                for count in 0..STATE_LENGTH {
+                    let lmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(LMID_EXPECTED[STATE_LENGTH + count]) };
+                    unsafe { assert_m128i(lmid_expected_m128i, lmid_sse_result[count]) };
+
+                    let hmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(HMID_EXPECTED[STATE_LENGTH + count]) };
+                    unsafe { assert_m128i(hmid_expected_m128i, hmid_sse_result[count]) };
+                }
+
+            } else {
+                panic!("not support avx2");
             }
         }
     }
