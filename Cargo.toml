@@ -10,4 +10,11 @@ edition = "2018"
 chrono = "0.4.10"
 
 [profile.release]
-# debug = true
+#debug = true
+
+[features]
+# no features by default
+default = []
+
+# for debug print
+debug-print = []
