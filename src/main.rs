@@ -400,7 +400,7 @@ unsafe fn loop_cpu_avx2(lmid: &[u128; STATE_LENGTH], hmid: &[u128; STATE_LENGTH]
     }
 
     loop {
-        let (incr_ret, lmid_incr, hmid_incr) = incr_sse(&lmid_tmp, &hmid_tmp);
+        let (incr_ret, lmid_incr, hmid_incr) = incr_avx2(&lmid_tmp, &hmid_tmp);
         if incr_ret {
             break;
         }
@@ -410,13 +410,13 @@ unsafe fn loop_cpu_avx2(lmid: &[u128; STATE_LENGTH], hmid: &[u128; STATE_LENGTH]
         let n = check_sse(&lcpy_tr, &hcpy_tr, mvm);
 
         // TODO DEBUG
-        if count % 10000 == 0 {
-            println!("count {} n {}", count, n);
-        }
+        //if count % 10000 == 0 {
+        //    println!("count {} n {}", count, n);
+        //}
 
         if n >= 0 {
             // TODO DEBUG
-            println!("count {} n {}", count, n);
+            //println!("count {} n {}", count, n);
             nonce = seri_sse(&lmid_incr, &hmid_incr, n);
             return (count * 128, nonce);
         }
@@ -602,6 +602,32 @@ unsafe fn transform64_2cycle_avx2(index: usize, side_from: usize, one: &__m256i,
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
+unsafe fn transform64_1cycle_avx2(index: usize, side_from: usize, one: &__m256i, lmid_tmp: &[[__m128i; STATE_LENGTH]; 2], hmid_tmp: &[[__m128i; STATE_LENGTH]; 2]) -> (__m128i, __m128i) {
+
+    let t1 = INDICES[index];
+    let t2 = INDICES[index + 1];
+
+    let alpha: __m256i = _mm256_set_m128i(lmid_tmp[side_from][t1], lmid_tmp[side_from][t1]);
+    let beta: __m256i = _mm256_set_m128i(hmid_tmp[side_from][t1], hmid_tmp[side_from][t1]);
+    let gamma: __m256i = _mm256_set_m128i(hmid_tmp[side_from][t2], hmid_tmp[side_from][t2]);
+    let epsilon: __m256i = _mm256_set_m128i(lmid_tmp[side_from][t2], lmid_tmp[side_from][t2]);
+
+    let nalpha = _mm256_andnot_si256(alpha, gamma);
+    let delta =  _mm256_andnot_si256(nalpha, _mm256_xor_si256(epsilon, beta)); 
+
+    // !delta & m256i_MAX
+    let lmid_temp_256 = _mm256_andnot_si256(delta, *one);
+    let lmid_temp_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(lmid_temp_256);
+
+    // (alpha ^ gamma) | delta
+    let hmid_temp_256 = _mm256_or_si256(_mm256_xor_si256(alpha, gamma), delta);
+    let hmid_temp_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(hmid_temp_256);
+
+    (lmid_temp_128[1], hmid_temp_128[1])
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
 unsafe fn transform64_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STATE_LENGTH]) -> ([__m128i; STATE_LENGTH], [__m128i; STATE_LENGTH]) {
     
     let mut side_from: usize = 0;
@@ -610,9 +636,7 @@ unsafe fn transform64_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STAT
     let mut lmid_tmp: [[__m128i; STATE_LENGTH]; 2] = [*lmid, [_mm_setzero_si128(); STATE_LENGTH]];
     let mut hmid_tmp: [[__m128i; STATE_LENGTH]; 2] = [*hmid, [_mm_setzero_si128(); STATE_LENGTH]];
  
-    let one_m256i: __m256i = _mm256_set_epi64x(0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64);
-
-    let one_m128i: __m128i = _mm_set_epi64x(0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64);
+    let one: __m256i = _mm256_set_epi64x(0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64, 0xFFFFFFFFFFFFFFFF as u64 as i64);
 
     for _round in 0..26 {
 
@@ -622,7 +646,7 @@ unsafe fn transform64_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STAT
                 break;
             }
 
-            let (lmid_ret_1, hmid_ret_1, lmid_ret_2, hmid_ret_2) = transform64_2cycle_avx2(counter, side_from, &one_m256i, &lmid_tmp, &hmid_tmp);
+            let (lmid_ret_1, hmid_ret_1, lmid_ret_2, hmid_ret_2) = transform64_2cycle_avx2(counter, side_from, &one, &lmid_tmp, &hmid_tmp);
 
             lmid_tmp[side_to][counter] = lmid_ret_1;
             lmid_tmp[side_to][counter + 1] = lmid_ret_2;
@@ -645,7 +669,7 @@ unsafe fn transform64_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STAT
         }
 
         // finalize
-        let (lmid_ret, hmid_ret) = transform64_1cycle_sse(counter, side_from, &one_m128i, &lmid_tmp, &hmid_tmp);
+        let (lmid_ret, hmid_ret) = transform64_1cycle_avx2(counter, side_from, &one, &lmid_tmp, &hmid_tmp);
         lmid_tmp[side_to][counter] = lmid_ret;
         hmid_tmp[side_to][counter] = hmid_ret;
 
@@ -660,7 +684,7 @@ unsafe fn transform64_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STAT
             break;
         }
 
-        let (lmid_ret_1, hmid_ret_1, lmid_ret_2, hmid_ret_2) = transform64_2cycle_avx2(counter, side_from, &one_m256i, &lmid_tmp, &hmid_tmp);
+        let (lmid_ret_1, hmid_ret_1, lmid_ret_2, hmid_ret_2) = transform64_2cycle_avx2(counter, side_from, &one, &lmid_tmp, &hmid_tmp);
 
         lmid_tmp[side_to][counter] = lmid_ret_1;
         lmid_tmp[side_to][counter + 1] = lmid_ret_2;
@@ -683,7 +707,7 @@ unsafe fn transform64_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STAT
     }
 
     // finalize
-    let (lmid_ret, hmid_ret) = transform64_1cycle_sse(counter, side_from, &one_m128i, &lmid_tmp, &hmid_tmp);
+    let (lmid_ret, hmid_ret) = transform64_1cycle_avx2(counter, side_from, &one, &lmid_tmp, &hmid_tmp);
     lmid_tmp[side_to][counter] = lmid_ret;
     hmid_tmp[side_to][counter] = hmid_ret;
 
@@ -748,6 +772,43 @@ fn transform64(lmid: &[u128; STATE_LENGTH], hmid: &[u128; STATE_LENGTH]) -> ([u1
     }
 
     (lmid_tmp[side_to], hmid_tmp[side_to])
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn incr_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STATE_LENGTH]) -> (bool, [__m128i; STATE_LENGTH], [__m128i; STATE_LENGTH]) {
+
+    let mut lmid_copy: [__m128i; STATE_LENGTH] = *lmid;
+    let mut hmid_copy: [__m128i; STATE_LENGTH] = *hmid;
+
+    let mut index = 5;
+    loop {
+        let low = _mm256_set_m128i(lmid_copy[index], lmid_copy[index + 1]);
+        let high = _mm256_set_m128i(hmid_copy[index], hmid_copy[index + 1]);
+
+        let low_result = _mm256_xor_si256(high, low);
+        let low_result_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(low_result);
+        let high_result_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(low);
+
+        let carry_m256i = _mm256_andnot_si256(low, high);
+        let carry = std::mem::transmute::<__m256i, [u64; 4]>(carry_m256i);
+
+        lmid_copy[index] = low_result_128[1];
+        hmid_copy[index] = high_result_128[1];
+        index += 1;
+        if HASH_LENGTH <= index || (carry[0] == 0) {
+            break;
+        }
+
+        lmid_copy[index] = low_result_128[0];
+        hmid_copy[index] = high_result_128[0];
+        index += 1;
+        if HASH_LENGTH <= index || (carry[2] == 0) {
+            break;
+        }
+    }
+
+    (index == HASH_LENGTH, lmid_copy, hmid_copy)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
