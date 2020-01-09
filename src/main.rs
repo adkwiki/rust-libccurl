@@ -788,22 +788,22 @@ unsafe fn incr_avx2(lmid: &[__m128i; STATE_LENGTH], hmid: &[__m128i; STATE_LENGT
 
         let low_result = _mm256_xor_si256(high, low);
         let low_result_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(low_result);
-        let high_result_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(low);
+        //let high_result_128 = std::mem::transmute::<__m256i, [__m128i; 2]>(low);
 
         let carry_m256i = _mm256_andnot_si256(low, high);
         let carry = std::mem::transmute::<__m256i, [u64; 4]>(carry_m256i);
 
+        hmid_copy[index] = lmid_copy[index];
         lmid_copy[index] = low_result_128[1];
-        hmid_copy[index] = high_result_128[1];
         index += 1;
-        if HASH_LENGTH <= index || (carry[0] == 0) {
+        if HASH_LENGTH <= index || (carry[2] == 0) {
             break;
         }
 
+        hmid_copy[index] = lmid_copy[index];
         lmid_copy[index] = low_result_128[0];
-        hmid_copy[index] = high_result_128[0];
         index += 1;
-        if HASH_LENGTH <= index || (carry[2] == 0) {
+        if HASH_LENGTH <= index || (carry[0] == 0) {
             break;
         }
     }
@@ -1067,6 +1067,65 @@ mod tests {
         }
         // TODO always false ???
         assert_eq!(false, result);
+
+        // simd
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            if is_x86_feature_detected!("sse") {
+
+                let mut lmid_i128: [__m128i; STATE_LENGTH] = unsafe { [_mm_setzero_si128(); STATE_LENGTH] };
+                let mut hmid_i128: [__m128i; STATE_LENGTH] = unsafe { [_mm_setzero_si128(); STATE_LENGTH] };
+
+                for count in 0..STATE_LENGTH {
+                    lmid_i128[count] = unsafe { std::mem::transmute::<u128, __m128i>(LMID[count]) };
+                    hmid_i128[count] = unsafe { std::mem::transmute::<u128, __m128i>(HMID[count]) };
+                }
+
+                let (result, lmid, hmid) = unsafe { incr_sse(&lmid_i128, &hmid_i128) };
+
+                for count in 0..STATE_LENGTH {
+                    let lmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(LMID_INCR_EXPECTED[count]) };
+                    unsafe { assert_m128i(lmid_expected_m128i, lmid[count]) };
+
+                    let hmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(HMID_INCR_EXPECTED[count]) };
+                    unsafe { assert_m128i(hmid_expected_m128i, hmid[count]) };
+                }
+
+                // TODO always false ???
+                assert_eq!(false, result);
+
+            } else {
+                panic!("not support sse");
+            }
+
+
+            if is_x86_feature_detected!("avx2") {
+
+                let mut lmid_i128: [__m128i; STATE_LENGTH] = unsafe { [_mm_setzero_si128(); STATE_LENGTH] };
+                let mut hmid_i128: [__m128i; STATE_LENGTH] = unsafe { [_mm_setzero_si128(); STATE_LENGTH] };
+
+                for count in 0..STATE_LENGTH {
+                    lmid_i128[count] = unsafe { std::mem::transmute::<u128, __m128i>(LMID[count]) };
+                    hmid_i128[count] = unsafe { std::mem::transmute::<u128, __m128i>(HMID[count]) };
+                }
+
+                let (result, lmid, hmid) = unsafe { incr_avx2(&lmid_i128, &hmid_i128) };
+
+                for count in 0..STATE_LENGTH {
+                    let lmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(LMID_INCR_EXPECTED[count]) };
+                    unsafe { assert_m128i(lmid_expected_m128i, lmid[count]) };
+
+                    let hmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(HMID_INCR_EXPECTED[count]) };
+                    unsafe { assert_m128i(hmid_expected_m128i, hmid[count]) };
+                }
+
+                // TODO always false ???
+                assert_eq!(false, result);
+
+            } else {
+                panic!("not support avx2");
+            }
+        }
     }
 
     #[test]
@@ -1099,14 +1158,14 @@ mod tests {
                     hmid_i128[count] = unsafe { std::mem::transmute::<u128, __m128i>(HMID_TRANSFORM64[count]) };
                 }
 
-                let (lmid_sse_result, hmid_sse_result) = unsafe { transform64_sse(&lmid_i128, &hmid_i128) };
+                let (lmid, hmid) = unsafe { transform64_sse(&lmid_i128, &hmid_i128) };
 
                 for count in 0..STATE_LENGTH {
                     let lmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(LMID_EXPECTED[STATE_LENGTH + count]) };
-                    unsafe { assert_m128i(lmid_expected_m128i, lmid_sse_result[count]) };
+                    unsafe { assert_m128i(lmid_expected_m128i, lmid[count]) };
 
                     let hmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(HMID_EXPECTED[STATE_LENGTH + count]) };
-                    unsafe { assert_m128i(hmid_expected_m128i, hmid_sse_result[count]) };
+                    unsafe { assert_m128i(hmid_expected_m128i, hmid[count]) };
                 }
 
             } else {
@@ -1124,14 +1183,14 @@ mod tests {
                     hmid_i128[count] = unsafe { std::mem::transmute::<u128, __m128i>(HMID_TRANSFORM64[count]) };
                 }
 
-                let (lmid_sse_result, hmid_sse_result) = unsafe { transform64_avx2(&lmid_i128, &hmid_i128) };
+                let (lmid, hmid) = unsafe { transform64_avx2(&lmid_i128, &hmid_i128) };
 
                 for count in 0..STATE_LENGTH {
                     let lmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(LMID_EXPECTED[STATE_LENGTH + count]) };
-                    unsafe { assert_m128i(lmid_expected_m128i, lmid_sse_result[count]) };
+                    unsafe { assert_m128i(lmid_expected_m128i, lmid[count]) };
 
                     let hmid_expected_m128i: __m128i = unsafe { std::mem::transmute::<u128, __m128i>(HMID_EXPECTED[STATE_LENGTH + count]) };
-                    unsafe { assert_m128i(hmid_expected_m128i, hmid_sse_result[count]) };
+                    unsafe { assert_m128i(hmid_expected_m128i, hmid[count]) };
                 }
 
             } else {
